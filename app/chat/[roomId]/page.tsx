@@ -10,6 +10,7 @@ import {
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { getSocket, disconnectSocket } from "@/lib/socket";
 import type { User, Message } from "@/lib/types";
+import { deriveKeyFromRoomId, encryptMessage, decryptMessage } from "@/lib/crypto";
 
 /* ── Helpers ─────────────────────────────────────────────── */
 
@@ -67,10 +68,19 @@ export default function ChatRoom() {
     new Map()
   );
   const [copyLabel, setCopyLabel] = useState("Copy");
+  const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
+  const cryptoKeyRef = useRef<CryptoKey | null>(null);
+
+  useEffect(() => {
+    deriveKeyFromRoomId(roomId).then(key => {
+      setCryptoKey(key);
+      cryptoKeyRef.current = key;
+    });
+  }, [roomId]);
 
   /* ── Redirect if no username ─────────────────────────── */
 
@@ -93,9 +103,16 @@ export default function ChatRoom() {
       socket.emit(
         "join-room",
         { roomId, username },
-        (payload: { users: User[]; messages: Message[] }) => {
+        async (payload: { users: User[]; messages: Message[] }) => {
           setUsers(payload.users);
-          setMessages(payload.messages);
+          const decryptedMsgs = await Promise.all(
+            payload.messages.map(async (m) => {
+              if (m.type === "system" || !cryptoKeyRef.current) return m;
+              const dec = await decryptMessage(m.content, cryptoKeyRef.current);
+              return { ...m, content: dec };
+            })
+          );
+          setMessages(decryptedMsgs);
         }
       );
     });
@@ -106,17 +123,25 @@ export default function ChatRoom() {
 
     socket.on(
       "user-joined",
-      (data: { user: User; users: User[]; message: Message }) => {
+      async (data: { user: User; users: User[]; message: Message }) => {
         setUsers(data.users);
-        setMessages((prev) => [...prev, data.message]);
+        let msg = data.message;
+        if (msg.type === "user" && cryptoKeyRef.current) {
+          msg = { ...msg, content: await decryptMessage(msg.content, cryptoKeyRef.current) };
+        }
+        setMessages((prev) => [...prev, msg]);
       }
     );
 
     socket.on(
       "user-left",
-      (data: { user: User; users: User[]; message: Message }) => {
+      async (data: { user: User; users: User[]; message: Message }) => {
         setUsers(data.users);
-        setMessages((prev) => [...prev, data.message]);
+        let msg = data.message;
+        if (msg.type === "user" && cryptoKeyRef.current) {
+          msg = { ...msg, content: await decryptMessage(msg.content, cryptoKeyRef.current) };
+        }
+        setMessages((prev) => [...prev, msg]);
         setTypingUsers((prev) => {
           const next = new Map(prev);
           next.delete(data.user.id);
@@ -125,11 +150,15 @@ export default function ChatRoom() {
       }
     );
 
-    socket.on("new-message", (msg: Message) => {
-      setMessages((prev) => [...prev, msg]);
+    socket.on("new-message", async (msg: Message) => {
+      let finalMsg = msg;
+      if (finalMsg.type === "user" && cryptoKeyRef.current) {
+        finalMsg = { ...finalMsg, content: await decryptMessage(finalMsg.content, cryptoKeyRef.current) };
+      }
+      setMessages((prev) => [...prev, finalMsg]);
       setTypingUsers((prev) => {
         const next = new Map(prev);
-        next.delete(msg.userId);
+        next.delete(finalMsg.userId);
         return next;
       });
     });
@@ -182,13 +211,14 @@ export default function ChatRoom() {
 
   /* ── Send message ────────────────────────────────────── */
 
-  function handleSend(e: FormEvent) {
+  async function handleSend(e: FormEvent) {
     e.preventDefault();
     const content = input.trim();
-    if (!content || !connected) return;
+    if (!content || !connected || !cryptoKey) return;
 
     const socket = getSocket();
-    socket.emit("send-message", { roomId, content });
+    const encryptedContent = await encryptMessage(content, cryptoKey);
+    socket.emit("send-message", { roomId, content: encryptedContent });
 
     // Stop typing indicator
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
@@ -297,7 +327,7 @@ export default function ChatRoom() {
               ☰
             </button>
             <div>
-              <div className="chat-header-title">#{roomId}</div>
+              <div className="chat-header-title">#{roomId} {cryptoKey && <span style={{ color: "var(--accent-cyan)", fontSize: "0.8rem", marginLeft: "8px" }}>🔒 E2EE</span>}</div>
               <div className="chat-header-users">
                 <span className="online-dot" />
                 {users.length} online
