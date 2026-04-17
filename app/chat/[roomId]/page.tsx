@@ -10,7 +10,7 @@ import {
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { getSocket, disconnectSocket } from "@/lib/socket";
 import type { User, Message } from "@/lib/types";
-import { deriveKeyFromRoomId, encryptMessage, decryptMessage } from "@/lib/crypto";
+import { deriveKey, encryptMessage, decryptMessage } from "@/lib/crypto";
 
 /* ── Helpers ─────────────────────────────────────────────── */
 
@@ -76,7 +76,8 @@ export default function ChatRoom() {
   const cryptoKeyRef = useRef<CryptoKey | null>(null);
 
   useEffect(() => {
-    deriveKeyFromRoomId(roomId).then(key => {
+    // Using roomId as both salt and secret as per user request to use just Room ID
+    deriveKey(roomId, roomId).then(key => {
       setCryptoKey(key);
       cryptoKeyRef.current = key;
     });
@@ -108,8 +109,13 @@ export default function ChatRoom() {
           const decryptedMsgs = await Promise.all(
             payload.messages.map(async (m) => {
               if (m.type === "system" || !cryptoKeyRef.current) return m;
-              const dec = await decryptMessage(m.content, cryptoKeyRef.current);
-              return { ...m, content: dec };
+              try {
+                const dec = await decryptMessage(m.content, cryptoKeyRef.current);
+                return { ...m, content: dec };
+              } catch (e) {
+                console.error("Decryption error", e);
+                return { ...m, content: "🔒 [Encrypted Message]" };
+              }
             })
           );
           setMessages(decryptedMsgs);
@@ -127,7 +133,11 @@ export default function ChatRoom() {
         setUsers(data.users);
         let msg = data.message;
         if (msg.type === "user" && cryptoKeyRef.current) {
-          msg = { ...msg, content: await decryptMessage(msg.content, cryptoKeyRef.current) };
+          try {
+            msg = { ...msg, content: await decryptMessage(msg.content, cryptoKeyRef.current) };
+          } catch (e) {
+            msg = { ...msg, content: "🔒 [Encrypted Message]" };
+          }
         }
         setMessages((prev) => [...prev, msg]);
       }
@@ -139,7 +149,11 @@ export default function ChatRoom() {
         setUsers(data.users);
         let msg = data.message;
         if (msg.type === "user" && cryptoKeyRef.current) {
-          msg = { ...msg, content: await decryptMessage(msg.content, cryptoKeyRef.current) };
+          try {
+            msg = { ...msg, content: await decryptMessage(msg.content, cryptoKeyRef.current) };
+          } catch (e) {
+            msg = { ...msg, content: "🔒 [Encrypted Message]" };
+          }
         }
         setMessages((prev) => [...prev, msg]);
         setTypingUsers((prev) => {
@@ -153,7 +167,11 @@ export default function ChatRoom() {
     socket.on("new-message", async (msg: Message) => {
       let finalMsg = msg;
       if (finalMsg.type === "user" && cryptoKeyRef.current) {
-        finalMsg = { ...finalMsg, content: await decryptMessage(finalMsg.content, cryptoKeyRef.current) };
+        try {
+          finalMsg = { ...finalMsg, content: await decryptMessage(finalMsg.content, cryptoKeyRef.current) };
+        } catch (e) {
+          finalMsg = { ...finalMsg, content: "🔒 [Encrypted Message]" };
+        }
       }
       setMessages((prev) => [...prev, finalMsg]);
       setTypingUsers((prev) => {
