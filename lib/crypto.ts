@@ -1,65 +1,71 @@
 "use client";
 
-// Void Cipher - End-to-End Encryption Engine (Web Crypto API)
-
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
-export async function deriveKeyFromRoomId(roomId: string): Promise<CryptoKey> {
-  const keyMaterial = await window.crypto.subtle.importKey(
+// ---- Key Derivation ----
+export async function deriveKey(
+  roomId: string,
+  secret: string
+): Promise<CryptoKey> {
+  const keyMaterial = await crypto.subtle.importKey(
     "raw",
-    ENCODER.encode(roomId),
+    ENCODER.encode(secret),
     { name: "PBKDF2" },
     false,
-    ["deriveBits", "deriveKey"]
+    ["deriveKey"]
   );
 
-  return window.crypto.subtle.deriveKey(
+  return crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt: ENCODER.encode("chat-pulse-salt-v1"), // Static salt for room derivation
-      iterations: 100000,
+      salt: ENCODER.encode(`chat-${roomId}-salt-v1`), // per-room salt
+      iterations: 250000,
       hash: "SHA-256",
     },
     keyMaterial,
     { name: "AES-GCM", length: 256 },
-    true,
+    false, // non-extractable
     ["encrypt", "decrypt"]
   );
 }
 
+// ---- Encoding Helpers ----
 function bufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
-  // To avoid maximum call stack size exceeded for very large arrays:
   const chunkSize = 8192;
+
   for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, Array.from(bytes.slice(i, i + chunkSize)));
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
-  return window.btoa(binary);
+
+  return btoa(binary);
 }
 
 function base64ToBuffer(base64: string): ArrayBuffer {
-  const binary_string = window.atob(base64);
-  const len = binary_string.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary_string.charCodeAt(i);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
   }
+
   return bytes.buffer;
 }
 
-export async function encryptMessage(text: string, key: CryptoKey): Promise<string> {
-  const iv = window.crypto.getRandomValues(new Uint8Array(12));
-  const encodedText = ENCODER.encode(text);
+// ---- Encryption ----
+export async function encryptMessage(
+  text: string,
+  key: CryptoKey
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = ENCODER.encode(text);
 
-  const ciphertext = await window.crypto.subtle.encrypt(
-    {
-      name: "AES-GCM",
-      iv: iv,
-    },
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
     key,
-    encodedText
+    encoded
   );
 
   const combined = new Uint8Array(iv.length + ciphertext.byteLength);
@@ -69,28 +75,26 @@ export async function encryptMessage(text: string, key: CryptoKey): Promise<stri
   return bufferToBase64(combined.buffer);
 }
 
-export async function decryptMessage(encryptedBase64: string, key: CryptoKey): Promise<string> {
-  try {
-    const combinedBuffer = base64ToBuffer(encryptedBase64);
-    const combined = new Uint8Array(combinedBuffer);
+// ---- Decryption ----
+export async function decryptMessage(
+  encryptedBase64: string,
+  key: CryptoKey
+): Promise<string> {
+  const combinedBuffer = base64ToBuffer(encryptedBase64);
+  const combined = new Uint8Array(combinedBuffer);
 
-    if (combined.length < 12) throw new Error("Invalid payload length");
-
-    const iv = combined.slice(0, 12);
-    const ciphertext = combined.slice(12);
-
-    const decrypted = await window.crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: iv,
-      },
-      key,
-      ciphertext
-    );
-
-    return DECODER.decode(decrypted);
-  } catch (e) {
-    console.error("Decryption error", e);
-    return "🔒 [Encrypted Message]";
+  if (combined.length < 12) {
+    throw new Error("Invalid payload");
   }
+
+  const iv = combined.slice(0, 12);
+  const ciphertext = combined.slice(12);
+
+  const decrypted = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    key,
+    ciphertext
+  );
+
+  return DECODER.decode(decrypted);
 }
