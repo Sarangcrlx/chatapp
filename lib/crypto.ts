@@ -1,5 +1,7 @@
 "use client";
 
+// Void Cipher - End-to-End Encryption Engine (Web Crypto API)
+
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
