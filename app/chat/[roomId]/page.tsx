@@ -93,7 +93,7 @@ export default function ChatRoom() {
   /* ── Socket connection ───────────────────────────────── */
 
   useEffect(() => {
-    if (!username || !roomId) return;
+    if (!username || !roomId || !cryptoKey) return;
 
     const socket = getSocket();
     socket.connect();
@@ -186,7 +186,7 @@ export default function ChatRoom() {
       disconnectSocket();
       setConnected(false);
     };
-  }, [roomId, username]);
+  }, [roomId, username, cryptoKey]);
 
   /* ── Auto-scroll ─────────────────────────────────────── */
 
